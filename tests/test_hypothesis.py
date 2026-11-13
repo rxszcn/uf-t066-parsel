@@ -142,10 +142,6 @@ def test_json_detection_bom(from_body: bool, obj: object) -> None:
     assert sel.root == obj
 
 
-@pytest.mark.xfail(
-    reason="::attr() does not lower-case the attribute name in HTML, unlike [attr]",
-    strict=True,
-)
 @given(
     st.text(st.characters(codec="ascii", categories=["L"]), min_size=1, max_size=5),
     # NULs are removed from the input, and the parser turns CR into LF.
@@ -153,6 +149,9 @@ def test_json_detection_bom(from_body: bool, obj: object) -> None:
 )
 @example("A", "")
 def test_css_attr_pseudo_element(name: str, value: str) -> None:
+    # In HTML both [attr] and ::attr(attr) match case-insensitively: the HTML
+    # parser stores attribute names lower-cased, and both writings lower-case
+    # the selector-side attribute name.
     sel = Selector(text=f'<p {name}="{value}">x</p>')
     assert sel.css(f"p[{name}]")
     assert sel.css(f"p::attr({name})").get() == value

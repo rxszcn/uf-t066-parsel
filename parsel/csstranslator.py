@@ -142,7 +142,15 @@ class TranslatorMixin:
             raise ExpressionError(
                 f"Expected a single string or ident for ::attr(), got {function.arguments!r}"
             )
-        return XPathExpr.from_xpath(xpath, attribute=function.arguments[0].value)
+        attribute = function.arguments[0].value
+        # Match the case policy of the attribute selector ([attr]): the HTML
+        # translator sets lower_case_attribute_names because HTML parsers store
+        # attribute names lower-cased, while the generic (XML) translator keeps
+        # names case-sensitive as written. Lowering here too keeps the two
+        # writings of the same selection consistent within a document type.
+        if self.lower_case_attribute_names:
+            attribute = attribute.lower()
+        return XPathExpr.from_xpath(xpath, attribute=attribute)
 
     def xpath_text_simple_pseudo_element(self, xpath: OriginalXPathExpr) -> XPathExpr:
         """Support selecting text nodes using ::text pseudo-element"""

@@ -261,3 +261,124 @@ class TestCSSSelector:
 
 class TestCSSSelectorBytes(TestCSSSelector):
     sel = Selector(body=bytes(HTMLBODY, encoding="utf-8"))
+
+
+# The attribute name as stored in the tree differs by document type: the HTML
+# parser lower-cases it, while the XML parser keeps it as written.
+HTML_UPPERCASE_DOC = '<html><body><img SRC="u"/></body></html>'
+XML_UPPERCASE_DOC = '<?xml version="1.0"?><root><img SRC="u"/></root>'
+XML_LOWERCASE_DOC = '<?xml version="1.0"?><root><img src="u"/></root>'
+XML_MIXEDCASE_DOC = '<?xml version="1.0"?><root><img sRc="u"/></root>'
+XML_UPPERCASE_ELEMENT = '<img SRC="u"/>'
+XML_LOWERCASE_ELEMENT = '<img src="u"/>'
+XML_MIXEDCASE_ELEMENT = '<img sRc="u"/>'
+
+
+@pytest.mark.parametrize(
+    ("translator", "query", "xpath"),
+    [
+        # Lower-case queries keep their exact, pre-existing translation.
+        (HTMLTranslator, "img[src]", "descendant-or-self::img[@src]"),
+        (HTMLTranslator, "img::attr(src)", "descendant-or-self::img/@src"),
+        (GenericTranslator, "img[src]", "descendant-or-self::img[@src]"),
+        (GenericTranslator, "img::attr(src)", "descendant-or-self::img/@src"),
+        # HTML: both writings lower-case the attribute name, so they translate
+        # to the same XPath as their lower-case equivalents.
+        (HTMLTranslator, "img[SRC]", "descendant-or-self::img[@src]"),
+        (HTMLTranslator, "img::attr(SRC)", "descendant-or-self::img/@src"),
+        (HTMLTranslator, "img[sRc]", "descendant-or-self::img[@src]"),
+        (HTMLTranslator, "img::attr(sRc)", "descendant-or-self::img/@src"),
+        # XML: both writings keep the attribute name as written.
+        (GenericTranslator, "img[SRC]", "descendant-or-self::img[@SRC]"),
+        (GenericTranslator, "img::attr(SRC)", "descendant-or-self::img/@SRC"),
+        (GenericTranslator, "img[sRc]", "descendant-or-self::img[@sRc]"),
+        (GenericTranslator, "img::attr(sRc)", "descendant-or-self::img/@sRc"),
+    ],
+)
+def test_attribute_name_case_translation(
+    translator: type[GenericTranslator | HTMLTranslator], query: str, xpath: str
+) -> None:
+    assert translator().css_to_xpath(query) == xpath
+
+
+@pytest.mark.parametrize(
+    ("query", "matched"),
+    [
+        # HTML matches attribute names case-insensitively: every writing and
+        # every query case hits the same lower-cased attribute.
+        ("img[SRC]", True),
+        ("img::attr(SRC)", True),
+        ("img[src]", True),
+        ("img::attr(src)", True),
+        ("img[sRc]", True),
+        ("img::attr(sRc)", True),
+    ],
+)
+def test_html_attribute_name_case_matching(query: str, matched: bool) -> None:
+    sel = Selector(text=HTML_UPPERCASE_DOC, type="html")
+    assert bool(sel.css(query)) is matched
+    # The two writings of a query with the same case agree on the hit, and the
+    # pseudo-element returns the attribute value when it matches.
+    if "::attr(" in query:
+        assert sel.css(query).getall() == (["u"] if matched else [])
+    else:
+        assert sel.css(query).getall() == (['<img src="u">'] if matched else [])
+
+
+@pytest.mark.parametrize(
+    ("document", "element", "query", "matched"),
+    [
+        # XML matches attribute names case-sensitively, keeping the name as
+        # written: [attr] and ::attr(attr) agree for every query case.
+        (XML_UPPERCASE_DOC, XML_UPPERCASE_ELEMENT, "img[SRC]", True),
+        (XML_UPPERCASE_DOC, XML_UPPERCASE_ELEMENT, "img::attr(SRC)", True),
+        (XML_UPPERCASE_DOC, XML_UPPERCASE_ELEMENT, "img[src]", False),
+        (XML_UPPERCASE_DOC, XML_UPPERCASE_ELEMENT, "img::attr(src)", False),
+        (XML_LOWERCASE_DOC, XML_LOWERCASE_ELEMENT, "img[SRC]", False),
+        (XML_LOWERCASE_DOC, XML_LOWERCASE_ELEMENT, "img::attr(SRC)", False),
+        (XML_LOWERCASE_DOC, XML_LOWERCASE_ELEMENT, "img[src]", True),
+        (XML_LOWERCASE_DOC, XML_LOWERCASE_ELEMENT, "img::attr(src)", True),
+        (XML_MIXEDCASE_DOC, XML_MIXEDCASE_ELEMENT, "img[sRc]", True),
+        (XML_MIXEDCASE_DOC, XML_MIXEDCASE_ELEMENT, "img::attr(sRc)", True),
+        (XML_MIXEDCASE_DOC, XML_MIXEDCASE_ELEMENT, "img[SRC]", False),
+        (XML_MIXEDCASE_DOC, XML_MIXEDCASE_ELEMENT, "img::attr(SRC)", False),
+        (XML_MIXEDCASE_DOC, XML_MIXEDCASE_ELEMENT, "img[src]", False),
+        (XML_MIXEDCASE_DOC, XML_MIXEDCASE_ELEMENT, "img::attr(src)", False),
+    ],
+)
+def test_xml_attribute_name_case_matching(
+    document: str, element: str, query: str, matched: bool
+) -> None:
+    sel = Selector(text=document, type="xml")
+    assert bool(sel.css(query)) is matched
+    if "::attr(" in query:
+        assert sel.css(query).getall() == (["u"] if matched else [])
+    else:
+        assert sel.css(query).getall() == ([element] if matched else [])
+
+
+def test_html_attribute_writings_agree_across_cases() -> None:
+    """For a fixed attribute, [attr] and ::attr(attr) never contradict each
+    other, regardless of the case used in the query."""
+    sel = Selector(text=HTML_UPPERCASE_DOC, type="html")
+    for case in ("SRC", "src", "sRc", "Src"):
+        attrib_selector = sel.css(f"img[{case}]")
+        attr_pseudo = sel.css(f"img::attr({case})")
+        assert bool(attrib_selector) is bool(attr_pseudo)
+        assert attr_pseudo.getall() == ["u"]
+
+
+def test_xml_attribute_writings_agree_across_cases() -> None:
+    """Same contract as the HTML side, but with case-sensitive matching."""
+    for document, stored in (
+        (XML_UPPERCASE_DOC, "SRC"),
+        (XML_LOWERCASE_DOC, "src"),
+        (XML_MIXEDCASE_DOC, "sRc"),
+    ):
+        sel = Selector(text=document, type="xml")
+        for case in ("SRC", "src", "sRc", "Src"):
+            attrib_selector = sel.css(f"img[{case}]")
+            attr_pseudo = sel.css(f"img::attr({case})")
+            assert bool(attrib_selector) is bool(attr_pseudo)
+            expected = ["u"] if case == stored else []
+            assert attr_pseudo.getall() == expected
