@@ -1,0 +1,91 @@
+from doctest import ELLIPSIS, NORMALIZE_WHITESPACE
+from pathlib import Path
+
+import pytest
+from sybil import Sybil
+
+try:
+    from sybil.parsers.codeblock import PythonCodeBlockParser
+except ImportError:
+    from sybil.parsers.codeblock import CodeBlockParser as PythonCodeBlockParser
+from sybil.parsers.doctest import DocTestParser
+from sybil.parsers.skip import skip
+
+from parsel import Selector, SelectorList
+
+# The Sphinx extensions under _ext require Sphinx/docutils, which are not part
+# of the test environment. Skip them during pytest's --doctest-modules pass.
+collect_ignore_glob = ["_ext/*"]
+
+
+def load_selector(filename, **kwargs):
+    input_path = Path(__file__).parent / "_static" / filename
+    return Selector(text=input_path.read_text(encoding="utf-8"), **kwargs)
+
+
+_PATCHABLE = {
+    Selector: ("__str__", "__repr__"),
+    SelectorList: ("__repr__",),
+}
+
+
+def setup(namespace):
+    namespace["load_selector"] = load_selector
+    namespace["_originals"] = {
+        (cls, name): cls.__dict__.get(name)
+        for cls, names in _PATCHABLE.items()
+        for name in names
+    }
+
+
+def teardown(namespace):
+    # Undo the repr changes some documents make for readability, so that they
+    # do not leak into other tests.
+    for (cls, name), original in namespace["_originals"].items():
+        if original is None:
+            if name in cls.__dict__:
+                delattr(cls, name)
+        else:
+            setattr(cls, name, original)
+
+
+def pytest_collection_modifyitems(items):
+    """Drop pytest's built-in doctest collection of the ``.rst`` files, and
+    ignore ``AbsoluteXPathWarning`` in the XPath tutorial.
+
+    When an ``.rst`` file is named explicitly on the command line (e.g.
+    ``pytest docs/xpath-tutorial.rst``), pytest's own doctest plugin collects it
+    as a text file *in addition* to Sybil (see ``_pytest.doctest._is_doctest``).
+    That native pass does not run the ``.. code:: python`` setup blocks, so it
+    fails on names such as ``doc``. Sybil is the source of truth for these
+    files, so drop the duplicate native doctest items.
+
+    The XPath tutorial uses absolute paths on nested selectors on purpose, to
+    show why they are a mistake, so its items ignore ``AbsoluteXPathWarning``,
+    which the ``error`` warnings filter would otherwise turn into failures.
+    """
+    items[:] = [
+        item
+        for item in items
+        if not (
+            type(item).__module__.startswith("_pytest.doctest")
+            and item.path.suffix in {".rst", ".txt"}
+        )
+    ]
+    for item in items:
+        if item.path.name == "xpath-tutorial.rst":
+            item.add_marker(
+                pytest.mark.filterwarnings("ignore::parsel.AbsoluteXPathWarning")
+            )
+
+
+pytest_collect_file = Sybil(
+    parsers=[
+        DocTestParser(optionflags=ELLIPSIS | NORMALIZE_WHITESPACE),
+        PythonCodeBlockParser(future_imports=["print_function"]),
+        skip,
+    ],
+    pattern="*.rst",
+    setup=setup,
+    teardown=teardown,
+).pytest()
